@@ -1,9 +1,9 @@
 ﻿using Microsoft.CodeAnalysis.CSharp;
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis;
 
@@ -18,9 +18,12 @@ namespace RoslynTest
             public string type;
             public string name;
             public string accessibility;
+            public ImmutableArray<AttributeData> attributes;
+            public string extra;
         }
         public List<FieldDef> DefinedFields = new List<FieldDef>();
         private string _name;
+        private INamedTypeSymbol _ignoreAttribute;
 
         public string FileName
         {
@@ -30,10 +33,11 @@ namespace RoslynTest
             }
         }
 
-        public SyntaxWalker(SemanticModel model, string filename)
+        public SyntaxWalker(SemanticModel model, string filename, INamedTypeSymbol ignoreAttribute)
         {
             _model = model;
             _name = filename;
+            _ignoreAttribute = ignoreAttribute;
         }
 
 
@@ -45,11 +49,19 @@ namespace RoslynTest
             {
                 var fieldSymbol = _model.GetDeclaredSymbol(variable);
 
+                if (fieldSymbol.GetAttributes().Any(a => a.AttributeClass == _ignoreAttribute))
+                    continue;
+
+                string extra = "";
+                if (fieldSymbol.IsStatic)
+                    extra += "static ";
                 DefinedFields.Add(new FieldDef()
                 {
                     type = node.Declaration.Type.ToString(),
                     name = fieldSymbol.Name,
-                    accessibility = fieldSymbol.DeclaredAccessibility.ToString().ToLower()
+                    accessibility = fieldSymbol.DeclaredAccessibility.ToString().ToLower(),
+                    extra = extra,
+                    attributes = fieldSymbol.GetAttributes()
                 });
             }
         }

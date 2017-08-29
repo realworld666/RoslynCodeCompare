@@ -1,13 +1,13 @@
-﻿using System;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Text;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace RoslynTest
 {
@@ -35,8 +35,10 @@ namespace RoslynTest
                 MetadataReference.CreateFromFile(string.Format(runtimePath, "System.Core"))
             };
 
-        private const string MyModelPath = @"D:\OneDrive\Documents\MMSaveEditor\Model";
-        private const string SourcePath = @"D:\OneDrive\Documents\MM_Decompiled2\Assembly-CSharp";
+        //private const string MyModelPath = @"D:\OneDrive\Documents\MMSaveEditor\Model";
+        //private const string SourcePath = @"D:\OneDrive\Documents\MM_Decompiled2\Assembly-CSharp";
+        private const string MyModelPath = @"D:\od\OneDrive\Documents\MMSaveEditor\Model";
+        private const string SourcePath = @"D:\od\OneDrive\Documents\MM_Decompiled2\Assembly-CSharp";
         private static StreamWriter outputFile;
 
         private static readonly CSharpCompilationOptions DefaultCompilationOptions =
@@ -74,7 +76,8 @@ namespace RoslynTest
                 var parsedSyntaxTree = Parse(source, "", CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.CSharp5));
                 var compilation = CSharpCompilation.Create("MyCompilation", syntaxTrees: new[] { parsedSyntaxTree }, references: new[] { Mscorlib });
                 var root = (CompilationUnitSyntax)parsedSyntaxTree.GetRoot();
-                var walker = new SyntaxWalker(compilation.GetSemanticModel(parsedSyntaxTree), fileName);
+
+                var walker = new SyntaxWalker(compilation.GetSemanticModel(parsedSyntaxTree), fileName, compilation.GetTypeByMetadataName("System.NonSerializedAttribute"));
                 walker.Visit(root);
 
                 // Original version of the file
@@ -82,7 +85,7 @@ namespace RoslynTest
                 var parsedSyntaxTree2 = Parse(original, "", CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.CSharp5));
                 var compilation2 = CSharpCompilation.Create("MyCompilation", syntaxTrees: new[] { parsedSyntaxTree2 }, references: new[] { Mscorlib });
                 var root2 = (CompilationUnitSyntax)parsedSyntaxTree2.GetRoot();
-                var walker2 = new SyntaxWalker(compilation2.GetSemanticModel(parsedSyntaxTree2), fileName);
+                var walker2 = new SyntaxWalker(compilation2.GetSemanticModel(parsedSyntaxTree2), fileName, compilation.GetTypeByMetadataName("System.NonSerializedAttribute"));
                 walker2.Visit(root2);
 
                 //Console.WriteLine(string.Format("Parsed {0} of {1}", ++count, myFiles.Count()));
@@ -97,19 +100,24 @@ namespace RoslynTest
 
         private static void GoCompare(SyntaxWalker walker, SyntaxWalker walker2)
         {
-            bool printedHeader = false;
+            List<string> added = new List<string>();
+            List<string> removed = new List<string>();
+            List<string> modified = new List<string>();
             if (walker.DefinedFields.Count == walker2.DefinedFields.Count || walker.DefinedFields.Count > walker2.DefinedFields.Count)
             {
                 foreach (var myField in walker.DefinedFields)
                 {
-                    if (!walker2.DefinedFields.Any(f => f.name.Equals(myField.name) && f.type.Equals(myField.type)))
+                    SyntaxWalker.FieldDef match = walker2.DefinedFields.FirstOrDefault(f => f.name.Equals(myField.name) && f.type.Equals(myField.type) && f.extra.Equals(myField.extra));
+                    if (match == null)
                     {
-                        if (!printedHeader)
+                        removed.Add(GenerateCodeVariable(myField));
+                    }
+                    else
+                    {
+                        if (!AttributesAreEqual(myField.attributes, match.attributes))
                         {
-                            printedHeader = true;
-                            outputFile.WriteLine(walker2.FileName + ":");
+                            modified.Add(GenerateCodeVariable(myField));
                         }
-                        outputFile.WriteLine(string.Format("{0} {1} {2};", myField.accessibility, myField.type, myField.name));
                     }
                 }
             }
@@ -117,19 +125,63 @@ namespace RoslynTest
             {
                 foreach (var myField in walker2.DefinedFields)
                 {
-                    if (!walker.DefinedFields.Any(f => f.name.Equals(myField.name) && f.type.Equals(myField.type)))
+                    SyntaxWalker.FieldDef match = walker.DefinedFields.FirstOrDefault(f => f.name.Equals(myField.name) && f.type.Equals(myField.type) && f.extra.Equals(myField.extra));
+
+                    if (match == null)
                     {
-                        if (!printedHeader)
+                        added.Add(GenerateCodeVariable(myField));
+                    }
+                    else
+                    {
+                        if (!AttributesAreEqual(myField.attributes, match.attributes))
                         {
-                            printedHeader = true;
-                            outputFile.WriteLine(walker.FileName + ":");
+                            modified.Add(GenerateCodeVariable(myField));
                         }
-                        outputFile.WriteLine(string.Format("{0} {1} {2};", myField.accessibility, myField.type, myField.name));
                     }
                 }
             }
 
+            if (added.Count > 0 || removed.Count > 0 || modified.Count > 0)
+            {
+                outputFile.WriteLine(string.Format("{0}:", walker.FileName));
+                outputFile.WriteLine(string.Format("Added:"));
+                foreach (string s in added)
+                {
+                    outputFile.WriteLine(s);
+                }
+                outputFile.WriteLine(string.Format("Removed:"));
+                foreach (string s in removed)
+                {
+                    outputFile.WriteLine(s);
+                }
+                outputFile.WriteLine(string.Format("Modified:"));
+                foreach (string s in modified)
+                {
+                    outputFile.WriteLine(s);
+                }
+            }
+
             outputFile.WriteLine();
+        }
+
+        private static string GenerateCodeVariable(SyntaxWalker.FieldDef myField)
+        {
+            string output = "";
+            foreach (AttributeData attribute in myField.attributes)
+            {
+                output += string.Format("[{0}]\n", attribute.ToString());
+            }
+            output += string.Format("{0} {1} {2} {3};", myField.accessibility, myField.extra, myField.type, myField.name);
+            return output;
+        }
+
+        private static bool AttributesAreEqual(ImmutableArray<AttributeData> myFieldAttributes, ImmutableArray<AttributeData> matchAttributes)
+        {
+            if (myFieldAttributes.Length != matchAttributes.Length)
+            {
+                return false;
+            }
+            return myFieldAttributes.Select((t, i) => i).All(i1 => matchAttributes.Any(a => a.ToString().Equals(myFieldAttributes[i1].ToString())));
         }
     }
 }
